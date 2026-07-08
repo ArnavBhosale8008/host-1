@@ -39,6 +39,18 @@ def test_build_launch_args_headless():
     assert args[:3] == [str(SDK.emulator), "-avd", "Pixel"]
 
 
+def test_build_launch_args_game_mode_flags():
+    args = build_launch_args(SDK, "Pixel", gpu="host", memory_mb=4096, cores=4)
+    assert args[args.index("-gpu") + 1] == "host"
+    assert args[args.index("-memory") + 1] == "4096"
+    assert args[args.index("-cores") + 1] == "4"
+
+
+def test_build_launch_args_omits_perf_flags_by_default():
+    args = build_launch_args(SDK, "Pixel")
+    assert "-gpu" not in args and "-memory" not in args and "-cores" not in args
+
+
 def test_list_avds_parses_lines():
     runner = FakeRunner(lambda a: CommandResult(returncode=0, stdout="Pixel_6\nTablet\n"))
     assert list_avds(SDK, runner) == ["Pixel_6", "Tablet"]

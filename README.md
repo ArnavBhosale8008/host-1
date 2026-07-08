@@ -24,6 +24,10 @@ keys required.
   on airplane mode") and the agent drives the device for you, using the live UI
   hierarchy + a local LLM. Fully offline; degrades gracefully if no model is
   pulled.
+- **Gaming controls** — "Optimize for games" launches the emulator with GPU
+  acceleration and more RAM/cores, and a **key-mapping** system maps your
+  keyboard/mouse to on-screen touches (a WASD movement stick + click-to-place
+  action buttons). See [Playing games & key mapping](#playing-games--key-mapping).
 
 ## Requirements
 
@@ -73,6 +77,41 @@ droidpilot doctor     # check your environment (SDK, adb, emulator, Ollama)
 droidpilot setup      # download the Android SDK + Play Store image + create an AVD
 ```
 
+## Playing games & key mapping
+
+In the **Game controls** panel:
+
+1. **Optimize for games (GPU + more RAM)** — launches the emulator with
+   `-gpu host` (hardware GPU), `-memory 4096`, and `-cores 4`. For the smoothest
+   experience also tick **"Show native emulator window"** so you play in the
+   emulator's own accelerated window rather than the in-app mirror.
+2. **Enable key mapping (keyboard → touch)** — turns your keyboard into touch
+   input. The default map is a **WASD movement stick** plus `J` (fire), `Space`
+   (jump), `R` (reload), `F` (action).
+3. **Edit keys** — click **Edit keys**, choose *Button* or *Move stick (WASD)*
+   in the dropdown, then click on the screen where it should go. Buttons prompt
+   for a key (e.g. `J`, `SPACE`). Bindings are stored as fractions of the screen
+   so they survive resolution changes, and are saved automatically (Save/Load
+   let you keep per-game layouts).
+
+Under the hood the movement stick holds a single touch (`input motionevent`
+DOWN/MOVE/UP) that follows your keys, and buttons fire `input tap`.
+
+### Honest limitations (please read)
+
+- **BGMI / Free Fire / other competitive shooters have emulator-detecting
+  anti-cheat.** On a self-built emulator like this they will typically refuse to
+  run, place you in emulator-only lobbies, or risk a ban. This is a policy/DRM
+  limitation, not a bug — DroidPilot does **not** attempt to defeat anti-cheat
+  (that would violate those games' terms of service). Casual and less-protected
+  games work best.
+- **Input latency.** Key/touch events go through `adb`, which adds tens of
+  milliseconds per event — fine for many games, but not twitch-competitive.
+- **The Play Store image is required** to install those games; run
+  `DroidPilot.exe setup` (it installs a Play-Store-enabled Android 14 image).
+- **Performance depends on your PC's GPU/CPU** and on hardware virtualization
+  being enabled.
+
 ## Configuration
 
 DroidPilot reads settings from environment variables and an optional
@@ -96,7 +135,7 @@ pytest
 
 ```
 droidpilot/
-  core/     SDK discovery, ADB wrapper, emulator process control
+  core/     SDK discovery, ADB wrapper, emulator control, key mapping
   ai/       Local (Ollama) AI agent + prompts
   gui/      PySide6 desktop UI (main window, live screen view)
 tests/      Unit tests

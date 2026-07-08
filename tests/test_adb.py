@@ -33,6 +33,12 @@ def test_tap_builds_command():
     ]
 
 
+def test_motion_event_builds_command():
+    runner = FakeRunner(lambda args: ok())
+    Adb(ADB, runner=runner).motion_event("DOWN", 5, 6)
+    assert runner.calls[0][-5:] == ["input", "motionevent", "DOWN", "5", "6"]
+
+
 def test_input_text_escapes_spaces():
     runner = FakeRunner(lambda args: ok())
     Adb(ADB, runner=runner).input_text("hello world")

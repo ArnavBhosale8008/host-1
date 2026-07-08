@@ -46,17 +46,39 @@ def build_launch_args(
     *,
     headless: bool = False,
     no_snapshot: bool = False,
+    gpu: str | None = None,
+    memory_mb: int | None = None,
+    cores: int | None = None,
     extra: Sequence[str] | None = None,
 ) -> list[str]:
-    """Construct the ``emulator`` command line for ``avd_name``."""
+    """Construct the ``emulator`` command line for ``avd_name``.
+
+    Args:
+        gpu: Value for ``-gpu`` (e.g. ``host`` for hardware acceleration,
+            ``swiftshader_indirect`` for a software fallback). Omitted if ``None``.
+        memory_mb: RAM for the guest in MB, passed as ``-memory``.
+        cores: Number of CPU cores, passed as ``-cores``.
+    """
     args = [str(sdk.emulator), "-avd", avd_name]
     if headless:
         args += ["-no-window", "-no-audio"]
     if no_snapshot:
         args.append("-no-snapshot")
+    if gpu:
+        args += ["-gpu", gpu]
+    if memory_mb:
+        args += ["-memory", str(memory_mb)]
+    if cores:
+        args += ["-cores", str(cores)]
     if extra:
         args += list(extra)
     return args
+
+
+# Preset passed to the emulator when the user enables "Optimize for games".
+GAME_MODE_GPU = "host"
+GAME_MODE_MEMORY_MB = 4096
+GAME_MODE_CORES = 4
 
 
 @dataclass
@@ -104,6 +126,9 @@ class EmulatorController:
         *,
         headless: bool = False,
         no_snapshot: bool = False,
+        gpu: str | None = None,
+        memory_mb: int | None = None,
+        cores: int | None = None,
         extra: Sequence[str] | None = None,
     ) -> EmulatorSession:
         """Launch ``avd_name`` and return a session handle.
@@ -117,7 +142,14 @@ class EmulatorController:
                 f"Unknown AVD {avd_name!r}. Available: {', '.join(available) or '<none>'}"
             )
         args = build_launch_args(
-            self._sdk, avd_name, headless=headless, no_snapshot=no_snapshot, extra=extra
+            self._sdk,
+            avd_name,
+            headless=headless,
+            no_snapshot=no_snapshot,
+            gpu=gpu,
+            memory_mb=memory_mb,
+            cores=cores,
+            extra=extra,
         )
         return EmulatorSession(avd_name=avd_name, process=self._launcher(args))
 

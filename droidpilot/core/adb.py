@@ -114,6 +114,14 @@ class Adb:
             ["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms)]
         )
 
+    def motion_event(self, action: str, x: int, y: int) -> None:
+        """Send a low-level touch ``motionevent`` (``DOWN``/``MOVE``/``UP``).
+
+        Used for continuous gestures such as a virtual joystick, where a single
+        touch is held and dragged rather than issued as discrete taps.
+        """
+        self._run(["shell", "input", "motionevent", action, str(x), str(y)])
+
     def input_text(self, text: str) -> None:
         """Type ``text`` into the focused field (spaces are escaped)."""
         escaped = text.replace(" ", "%s")

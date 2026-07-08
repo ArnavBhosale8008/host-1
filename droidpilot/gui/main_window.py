@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
+
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -9,6 +12,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -22,8 +26,24 @@ from ..ai.agent import Agent, AgentStep
 from ..ai.ollama_client import OllamaClient
 from ..config import Config
 from ..core.adb import Adb
-from ..core.emulator import EmulatorController, EmulatorSession
+from ..core.emulator import (
+    GAME_MODE_CORES,
+    GAME_MODE_GPU,
+    GAME_MODE_MEMORY_MB,
+    EmulatorController,
+    EmulatorSession,
+)
 from ..core.errors import DroidPilotError
+from ..core.keymap import (
+    Joystick,
+    KeyMap,
+    KeyMapper,
+    TapBinding,
+    default_keymap,
+    default_keymap_path,
+    load_keymap,
+    save_keymap,
+)
 from ..core.sdk import Sdk, locate_sdk
 from .screen_view import ScreenPoller, ScreenView
 
@@ -61,6 +81,11 @@ class MainWindow(QWidget):
         self._poller: ScreenPoller | None = None
         self._agent_worker: AgentWorker | None = None
         self._booted = False
+        self._keymap_path = default_keymap_path()
+        self._keymap = load_keymap(self._keymap_path)
+        self._mapper: KeyMapper | None = None
+        self._mapper_size: tuple[int, int] | None = None
+        self._device_size: tuple[int, int] = (1080, 1920)
 
         self.setWindowTitle("DroidPilot")
         self.resize(1000, 720)
@@ -73,12 +98,16 @@ class MainWindow(QWidget):
 
         self.screen = ScreenView()
         self.screen.tapped.connect(self._on_screen_tap)
+        self.screen.key_pressed.connect(self._on_key_pressed)
+        self.screen.key_released.connect(self._on_key_released)
+        self.screen.point_placed.connect(self._on_point_placed)
         root.addWidget(self.screen, stretch=3)
 
         side = QVBoxLayout()
         root.addLayout(side, stretch=2)
 
         side.addWidget(self._build_device_group())
+        side.addWidget(self._build_game_group())
         side.addWidget(self._build_app_group())
         side.addWidget(self._build_ai_group(), stretch=1)
 
@@ -102,6 +131,35 @@ class MainWindow(QWidget):
         layout.addLayout(buttons)
         self.show_window_chk = QCheckBox("Show native emulator window (better for games)")
         layout.addWidget(self.show_window_chk)
+        return box
+
+    def _build_game_group(self) -> QGroupBox:
+        box = QGroupBox("Game controls")
+        layout = QVBoxLayout(box)
+        self.game_mode_chk = QCheckBox("Optimize for games (GPU + more RAM)")
+        layout.addWidget(self.game_mode_chk)
+        self.keymap_chk = QCheckBox("Enable key mapping (keyboard \u2192 touch)")
+        self.keymap_chk.toggled.connect(self._on_keymap_toggled)
+        layout.addWidget(self.keymap_chk)
+        row = QHBoxLayout()
+        self.edit_keys_btn = QPushButton("Edit keys")
+        self.edit_keys_btn.setCheckable(True)
+        self.edit_keys_btn.toggled.connect(self._on_edit_keys_toggled)
+        row.addWidget(self.edit_keys_btn)
+        self.place_combo = QComboBox()
+        self.place_combo.addItems(["Button", "Move stick (WASD)"])
+        row.addWidget(self.place_combo)
+        layout.addLayout(row)
+        row2 = QHBoxLayout()
+        for label, handler in (
+            ("Save\u2026", self._on_save_keymap),
+            ("Load\u2026", self._on_load_keymap),
+            ("Reset", self._on_reset_keymap),
+        ):
+            btn = QPushButton(label)
+            btn.clicked.connect(handler)
+            row2.addWidget(btn)
+        layout.addLayout(row2)
         return box
 
     def _build_app_group(self) -> QGroupBox:
@@ -164,8 +222,13 @@ class MainWindow(QWidget):
             self._set_status("No AVD selected")
             return
         headless = not self.show_window_chk.isChecked()
+        gpu = memory = cores = None
+        if self.game_mode_chk.isChecked():
+            gpu, memory, cores = GAME_MODE_GPU, GAME_MODE_MEMORY_MB, GAME_MODE_CORES
         try:
-            self._session = self._controller.start(avd, headless=headless)
+            self._session = self._controller.start(
+                avd, headless=headless, gpu=gpu, memory_mb=memory, cores=cores
+            )
         except DroidPilotError as exc:
             self._show_error("Failed to start emulator", str(exc))
             return
@@ -183,6 +246,8 @@ class MainWindow(QWidget):
             self._session = None
         self._adb = None
         self._booted = False
+        self._mapper = None
+        self._mapper_size = None
         self.screen.clear_device()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -209,7 +274,11 @@ class MainWindow(QWidget):
         try:
             if self._adb is not None:
                 try:
-                    self.screen.set_device_size(*self._adb.screen_size())
+                    size = self._adb.screen_size()
+                    self.screen.set_device_size(*size)
+                    if size != self._device_size:
+                        self._device_size = size
+                        self._mapper = None
                 except DroidPilotError:
                     pass
             self.screen.update_frame(png)
@@ -239,8 +308,6 @@ class MainWindow(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "Select APK", "", "APK files (*.apk)")
         if not path:
             return
-        from pathlib import Path
-
         try:
             self._adb.install(Path(path))
             self._set_status(f"Installed {path}")
@@ -282,6 +349,106 @@ class MainWindow(QWidget):
     def _on_agent_failed(self, message: str) -> None:
         self.ai_run_btn.setEnabled(True)
         self.ai_log.appendPlainText(f"  failed: {message}")
+
+    # -- Key mapping ---------------------------------------------------------
+    def _on_keymap_toggled(self, on: bool) -> None:
+        self._mapper = None
+        self.screen.set_keymapping(on, self._keymap if on else None)
+        if on:
+            self._set_status("Key mapping on \u2014 click the screen, then use your keys")
+        else:
+            self.edit_keys_btn.setChecked(False)
+
+    def _on_edit_keys_toggled(self, on: bool) -> None:
+        self.screen.set_edit_mode(on, self._keymap)
+        if on:
+            self._set_status("Edit mode: click where a key/stick should go")
+
+    def _on_point_placed(self, nx: float, ny: float) -> None:
+        if self.place_combo.currentIndex() == 1:
+            if self._keymap.joystick is None:
+                self._keymap.joystick = Joystick(
+                    up="W", down="S", left="A", right="D", x=nx, y=ny
+                )
+            else:
+                self._keymap.joystick = replace(self._keymap.joystick, x=nx, y=ny)
+        else:
+            key, ok = QInputDialog.getText(self, "Bind key", "Key name (e.g. J, SPACE):")
+            key = key.strip().upper()
+            if not ok or not key:
+                return
+            self._keymap.taps.append(TapBinding(key=key, x=nx, y=ny, label=key))
+        self._persist_keymap()
+        self._mapper = None
+        self.screen.set_edit_mode(True, self._keymap)
+
+    def _on_save_keymap(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save key map", "keymap.json", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            save_keymap(self._keymap, Path(path))
+            self._set_status(f"Saved key map to {path}")
+        except OSError as exc:
+            self._show_error("Could not save key map", str(exc))
+
+    def _on_load_keymap(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Load key map", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            self._keymap = KeyMap.from_json(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            self._show_error("Could not load key map", str(exc))
+            return
+        self._persist_keymap()
+        self._refresh_keymap_views()
+        self._set_status(f"Loaded key map from {path}")
+
+    def _on_reset_keymap(self) -> None:
+        self._keymap = default_keymap()
+        self._persist_keymap()
+        self._refresh_keymap_views()
+        self._set_status("Key map reset to WASD default")
+
+    def _persist_keymap(self) -> None:
+        try:
+            save_keymap(self._keymap, self._keymap_path)
+        except OSError:
+            pass
+
+    def _refresh_keymap_views(self) -> None:
+        self._mapper = None
+        if self.keymap_chk.isChecked():
+            self.screen.set_keymapping(True, self._keymap)
+        if self.edit_keys_btn.isChecked():
+            self.screen.set_edit_mode(True, self._keymap)
+
+    def _ensure_mapper(self) -> KeyMapper | None:
+        if self._adb is None:
+            return None
+        if self._mapper is None or self._mapper_size != self._device_size:
+            self._mapper = KeyMapper(self._adb, self._keymap, self._device_size)
+            self._mapper_size = self._device_size
+        return self._mapper
+
+    def _on_key_pressed(self, key: str) -> None:
+        mapper = self._ensure_mapper()
+        if mapper is None:
+            return
+        try:
+            mapper.press(key)
+        except Exception as exc:  # noqa: BLE001 - surface, never crash the UI
+            self._set_status(str(exc))
+
+    def _on_key_released(self, key: str) -> None:
+        mapper = self._ensure_mapper()
+        if mapper is None:
+            return
+        try:
+            mapper.release(key)
+        except Exception as exc:  # noqa: BLE001 - surface, never crash the UI
+            self._set_status(str(exc))
 
     # -- Helpers -------------------------------------------------------------
     def _with_adb(self, fn) -> None:

@@ -3,10 +3,42 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, QThread, Signal
-from PySide6.QtGui import QImage, QMouseEvent, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import QLabel, QSizePolicy
 
 from ..core.adb import Adb
+from ..core.keymap import KeyMap
+
+_SPECIAL_KEYS = {
+    Qt.Key.Key_Space: "SPACE",
+    Qt.Key.Key_Up: "UP",
+    Qt.Key.Key_Down: "DOWN",
+    Qt.Key.Key_Left: "LEFT",
+    Qt.Key.Key_Right: "RIGHT",
+    Qt.Key.Key_Shift: "SHIFT",
+    Qt.Key.Key_Control: "CTRL",
+    Qt.Key.Key_Return: "ENTER",
+    Qt.Key.Key_Enter: "ENTER",
+}
+
+
+def key_name_from_event(event: QKeyEvent) -> str | None:
+    """Return a normalized key name (e.g. ``"W"``, ``"SPACE"``) or ``None``."""
+    special = _SPECIAL_KEYS.get(Qt.Key(event.key()))
+    if special is not None:
+        return special
+    text = event.text().upper().strip()
+    if len(text) == 1 and text.isalnum():
+        return text
+    return None
 
 
 class ScreenPoller(QThread):
@@ -74,21 +106,44 @@ def map_click_to_device(
 
 
 class ScreenView(QLabel):
-    """Displays the device screen and forwards taps back to the device."""
+    """Displays the device screen and forwards taps/keys back to the device."""
 
     tapped = Signal(int, int)
+    key_pressed = Signal(str)
+    key_released = Signal(str)
+    # Emitted with a normalized (x, y) in 0..1 when a spot is clicked in edit mode.
+    point_placed = Signal(float, float)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(240, 400)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setText("No device connected")
         self._device_size: tuple[int, int] = (1080, 1920)
         self._pixmap_size: tuple[int, int] = (0, 0)
+        self._keymapping = False
+        self._edit_mode = False
+        self._overlay: KeyMap | None = None
 
     def set_device_size(self, width: int, height: int) -> None:
         self._device_size = (width, height)
+
+    def set_keymapping(self, enabled: bool, keymap: KeyMap | None = None) -> None:
+        """Enable/disable key capture and show the binding overlay."""
+        self._keymapping = enabled
+        self._overlay = keymap if enabled else None
+        if enabled:
+            self.setFocus()
+        self.update()
+
+    def set_edit_mode(self, enabled: bool, keymap: KeyMap | None = None) -> None:
+        """When enabled, clicks emit :attr:`point_placed` instead of tapping."""
+        self._edit_mode = enabled
+        if keymap is not None:
+            self._overlay = keymap
+        self.update()
 
     def clear_device(self) -> None:
         """Reset to the 'no device' placeholder."""
@@ -109,11 +164,27 @@ class ScreenView(QLabel):
         )
         self._pixmap_size = (scaled.width(), scaled.height())
         self.setPixmap(scaled)
+        if self._overlay is not None:
+            self.update()
+
+    def _pixmap_offset(self) -> tuple[float, float]:
+        pix_w, pix_h = self._pixmap_size
+        return (self.width() - pix_w) / 2, (self.height() - pix_h) / 2
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
         if event.button() != Qt.MouseButton.LeftButton:
             return
         pos: QPoint = event.position().toPoint()
+        if self._edit_mode:
+            pix_w, pix_h = self._pixmap_size
+            if pix_w <= 0 or pix_h <= 0:
+                return
+            off_x, off_y = self._pixmap_offset()
+            nx = (pos.x() - off_x) / pix_w
+            ny = (pos.y() - off_y) / pix_h
+            if 0 <= nx <= 1 and 0 <= ny <= 1:
+                self.point_placed.emit(nx, ny)
+            return
         mapped = map_click_to_device(
             (pos.x(), pos.y()),
             (self.width(), self.height()),
@@ -122,3 +193,65 @@ class ScreenView(QLabel):
         )
         if mapped is not None:
             self.tapped.emit(*mapped)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt override
+        if self._keymapping and not event.isAutoRepeat():
+            name = key_name_from_event(event)
+            if name is not None:
+                self.key_pressed.emit(name)
+                return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt override
+        if self._keymapping and not event.isAutoRepeat():
+            name = key_name_from_event(event)
+            if name is not None:
+                self.key_released.emit(name)
+                return
+        super().keyReleaseEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().paintEvent(event)
+        overlay = self._overlay
+        pix_w, pix_h = self._pixmap_size
+        if overlay is None or pix_w <= 0 or pix_h <= 0:
+            return
+        off_x, off_y = self._pixmap_offset()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = QFont()
+        font.setBold(True)
+        painter.setFont(font)
+
+        def draw_badge(nx: float, ny: float, text: str, color: QColor) -> None:
+            cx = off_x + nx * pix_w
+            cy = off_y + ny * pix_h
+            radius = 18
+            painter.setBrush(color)
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawEllipse(QPoint(int(cx), int(cy)), radius, radius)
+            painter.drawText(
+                int(cx - radius),
+                int(cy - radius),
+                radius * 2,
+                radius * 2,
+                Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+
+        blue = QColor(30, 120, 220, 200)
+        green = QColor(40, 160, 90, 200)
+        for tap in overlay.taps:
+            draw_badge(tap.x, tap.y, tap.key, blue)
+        for swipe in overlay.swipes:
+            draw_badge(swipe.x, swipe.y, swipe.key, blue)
+        if overlay.joystick is not None:
+            js = overlay.joystick
+            cx = off_x + js.x * pix_w
+            cy = off_y + js.y * pix_h
+            ring = js.radius * min(pix_w, pix_h)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QColor(40, 160, 90, 220))
+            painter.drawEllipse(QPoint(int(cx), int(cy)), int(ring), int(ring))
+            draw_badge(js.x, js.y, "WASD", green)
+        painter.end()
