@@ -36,7 +36,30 @@ keys required.
   vision-capable model such as `llama3.2-vision` or a text model such as
   `llama3.1`.
 
-## Install
+## Download (Windows)
+
+A prebuilt `DroidPilot.exe` is published on the
+[Releases page](https://github.com/ArnavBhosale8008/host-1/releases) (built by
+the [`Build Windows executable`](.github/workflows/build-windows.yml) workflow).
+It is the **control app only** (~tens of MB). On first run:
+
+1. Enable hardware virtualization on your PC (BIOS "Intel VT-x / AMD-V", plus
+   Windows "Windows Hypervisor Platform"). Without it the emulator can't run.
+2. Install the Android SDK + a Play Store system image + an AVD in one command:
+   ```
+   DroidPilot.exe setup
+   ```
+   (or, from source, `droidpilot setup`). This downloads Google's command-line
+   tools and installs `platform-tools`, `emulator`, an Android 14 **Play Store**
+   image, and creates an AVD named `droidpilot`.
+3. Launch `DroidPilot.exe`, pick the AVD, and press **Start**.
+
+> **Note on games:** the in-app mirror refreshes a few times per second — great
+> for the AI assistant, but for smooth gameplay tick **"Show native emulator
+> window"** before pressing Start to use the emulator's own hardware-accelerated
+> window. Heavy 3D games need a capable GPU.
+
+## Install (from source)
 
 ```bash
 pip install -e .
@@ -47,6 +70,7 @@ pip install -e .
 ```bash
 droidpilot            # launch the desktop app
 droidpilot doctor     # check your environment (SDK, adb, emulator, Ollama)
+droidpilot setup      # download the Android SDK + Play Store image + create an AVD
 ```
 
 ## Configuration

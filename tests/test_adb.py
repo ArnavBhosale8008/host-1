@@ -6,7 +6,7 @@ import pytest
 
 from droidpilot.core.adb import Adb, parse_devices
 from droidpilot.core.errors import AdbError
-from droidpilot.core.process import CommandResult
+from droidpilot.core.process import CommandResult, SubprocessRunner
 
 from .fakes import FakeRunner
 
@@ -94,3 +94,19 @@ def test_dump_ui_reads_back_xml():
 
     runner = FakeRunner(handler)
     assert Adb(ADB, runner=runner).dump_ui() == "<hierarchy/>"
+
+
+class _BinaryFailRunner(SubprocessRunner):
+    """A SubprocessRunner whose run_binary fails with non-UTF8 stderr bytes."""
+
+    def run_binary(self, args, *, timeout=None):
+        return 1, b"", b"\xff\xfe screencap: permission denied"
+
+
+def test_screencap_error_decodes_non_utf8_stderr():
+    # Regression: stderr.decode("replace") treated "replace" as the codec name
+    # and raised LookupError; it must decode with errors="replace" instead.
+    runner = _BinaryFailRunner()
+    with pytest.raises(AdbError) as excinfo:
+        Adb(ADB, runner=runner).screencap_png()
+    assert "screencap" in str(excinfo.value)

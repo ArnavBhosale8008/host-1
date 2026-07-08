@@ -164,7 +164,11 @@ class Adb:
         if isinstance(runner, SubprocessRunner):
             code, stdout, stderr = runner.run_binary(args, timeout=30)
             if code != 0:
-                raise AdbError("screencap failed", returncode=code, stderr=stderr.decode("replace"))
+                raise AdbError(
+                    "screencap failed",
+                    returncode=code,
+                    stderr=stderr.decode("utf-8", errors="replace"),
+                )
             return stdout
         # Fallback for injected runners: bytes are round-tripped via latin-1.
         result = runner.run(args, timeout=30)

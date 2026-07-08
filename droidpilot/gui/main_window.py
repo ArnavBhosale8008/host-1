@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -59,6 +60,7 @@ class MainWindow(QWidget):
         self._adb: Adb | None = None
         self._poller: ScreenPoller | None = None
         self._agent_worker: AgentWorker | None = None
+        self._booted = False
 
         self.setWindowTitle("DroidPilot")
         self.resize(1000, 720)
@@ -98,6 +100,8 @@ class MainWindow(QWidget):
         buttons.addWidget(self.start_btn)
         buttons.addWidget(self.stop_btn)
         layout.addLayout(buttons)
+        self.show_window_chk = QCheckBox("Show native emulator window (better for games)")
+        layout.addWidget(self.show_window_chk)
         return box
 
     def _build_app_group(self) -> QGroupBox:
@@ -159,15 +163,17 @@ class MainWindow(QWidget):
         if not avd:
             self._set_status("No AVD selected")
             return
+        headless = not self.show_window_chk.isChecked()
         try:
-            self._session = self._controller.start(avd)
+            self._session = self._controller.start(avd, headless=headless)
         except DroidPilotError as exc:
             self._show_error("Failed to start emulator", str(exc))
             return
         self._adb = Adb(self._sdk.adb)  # type: ignore[union-attr]
+        self._booted = False
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self._set_status(f"Starting {avd}… waiting for boot")
+        self._set_status(f"Starting {avd}… waiting for boot (this can take a minute)")
         self._start_polling()
 
     def _on_stop(self) -> None:
@@ -176,6 +182,8 @@ class MainWindow(QWidget):
             self._session.stop()
             self._session = None
         self._adb = None
+        self._booted = False
+        self.screen.clear_device()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self._set_status("Stopped")
@@ -185,7 +193,7 @@ class MainWindow(QWidget):
             return
         self._poller = ScreenPoller(self._adb, self._config.screen_refresh_ms)
         self._poller.frame.connect(self._on_frame)
-        self._poller.error.connect(self._set_status)
+        self._poller.error.connect(self._on_poll_error)
         self._poller.start()
 
     def _stop_polling(self) -> None:
@@ -195,12 +203,30 @@ class MainWindow(QWidget):
             self._poller = None
 
     def _on_frame(self, png: bytes) -> None:
-        if self._adb is not None:
-            try:
-                self.screen.set_device_size(*self._adb.screen_size())
-            except DroidPilotError:
-                pass
-        self.screen.update_frame(png)
+        if self._poller is None:
+            # A frame queued before Stop; ignore so the view stays cleared.
+            return
+        try:
+            if self._adb is not None:
+                try:
+                    self.screen.set_device_size(*self._adb.screen_size())
+                except DroidPilotError:
+                    pass
+            self.screen.update_frame(png)
+        except Exception:  # noqa: BLE001 - never let a bad frame crash the UI
+            return
+        if not self._booted:
+            self._booted = True
+            self._set_status("Device connected")
+
+    def _on_poll_error(self, message: str) -> None:
+        if self._poller is None:
+            return
+        # Before boot, screencap failures/timeouts are expected; keep it calm.
+        if not self._booted:
+            self._set_status("Starting device… waiting for boot (this can take a minute)")
+        else:
+            self._set_status(message)
 
     # -- Interaction ---------------------------------------------------------
     def _on_screen_tap(self, x: int, y: int) -> None:
@@ -264,7 +290,7 @@ class MainWindow(QWidget):
             return
         try:
             fn(self._adb)
-        except DroidPilotError as exc:
+        except Exception as exc:  # noqa: BLE001 - surface, never crash the UI
             self._set_status(str(exc))
 
     def _set_status(self, message: str) -> None:

@@ -90,6 +90,12 @@ class ScreenView(QLabel):
     def set_device_size(self, width: int, height: int) -> None:
         self._device_size = (width, height)
 
+    def clear_device(self) -> None:
+        """Reset to the 'no device' placeholder."""
+        self._pixmap_size = (0, 0)
+        self.setPixmap(QPixmap())
+        self.setText("No device connected")
+
     def update_frame(self, png: bytes) -> None:
         """Render a new PNG frame, scaled to fit while preserving aspect."""
         image = QImage.fromData(png, "PNG")
